@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: afroj-video-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: "*"
