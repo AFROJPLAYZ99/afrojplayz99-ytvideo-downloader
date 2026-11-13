@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import yt_dlp
+from yt_dlp.version import __version__ as YTDLP_VERSION
 
 APP_DIR=Path(__file__).resolve().parent
 WORK=Path(os.getenv("DOWNLOAD_DIR","/tmp/afroj-jobs"))
@@ -65,7 +66,7 @@ def health():
         "ok":True,
         "service":"afroj-video-downloader",
         "version":"1.1.0",
-        "yt_dlp_version":getattr(yt_dlp,"version",{}).get("__version__","unknown"),
+        "yt_dlp_version":YTDLP_VERSION,
         "deno_available":bool(deno),
         "active_jobs":sum(1 for j in jobs.values() if j["status"] in ("queued","processing"))
     }
