@@ -1,4 +1,4 @@
-import os, re, uuid, time, shutil, threading, subprocess
+import os, uuid, time, shutil, threading, subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 from fastapi import FastAPI, HTTPException
@@ -13,7 +13,7 @@ WORK.mkdir(parents=True,exist_ok=True)
 MAX_JOBS=2
 jobs={}
 lock=threading.Lock()
-app=FastAPI(title="AFROJ Video Downloader API",version="1.0.0")
+app=FastAPI(title="AFROJ Video Downloader API",version="1.1.0")
 origins=[x.strip() for x in os.getenv("ALLOWED_ORIGINS","*").split(",") if x.strip()]
 app.add_middleware(CORSMiddleware,allow_origins=origins,allow_credentials=False,allow_methods=["GET","POST"],allow_headers=["*"])
 
@@ -43,11 +43,32 @@ def validate(req):
     return req.url.strip()
 
 def ydl_base():
-    return {"quiet":True,"no_warnings":True,"noplaylist":True,"ignoreerrors":False,"socket_timeout":20,"retries":2,"fragment_retries":2,"extractor_retries":2,"max_filesize":1500*1024*1024,"restrictfilenames":True}
+    return {
+        "quiet":True,
+        "no_warnings":False,
+        "noplaylist":True,
+        "ignoreerrors":False,
+        "socket_timeout":25,
+        "retries":2,
+        "fragment_retries":2,
+        "extractor_retries":2,
+        "max_filesize":1500*1024*1024,
+        "restrictfilenames":True,
+        # Prefer IPv4 on hosts where the IPv6 route is unreliable.
+        "source_address":"0.0.0.0",
+    }
 
 @app.get("/health")
 def health():
-    return {"ok":True,"service":"afroj-video-downloader","active_jobs":sum(1 for j in jobs.values() if j["status"] in ("queued","processing"))}
+    deno=shutil.which("deno")
+    return {
+        "ok":True,
+        "service":"afroj-video-downloader",
+        "version":"1.1.0",
+        "yt_dlp_version":getattr(yt_dlp,"version",{}).get("__version__","unknown"),
+        "deno_available":bool(deno),
+        "active_jobs":sum(1 for j in jobs.values() if j["status"] in ("queued","processing"))
+    }
 
 @app.post("/api/info")
 def info(req:InspectRequest):
@@ -64,7 +85,10 @@ def info(req:InspectRequest):
         return {"title":data.get("title","YouTube video"),"duration":duration,"available_heights":heights}
     except HTTPException: raise
     except Exception as e:
-        raise HTTPException(422,"Could not inspect this video. It may be unavailable, restricted, or unsupported. "+str(e)[:220])
+        msg=str(e)
+        if "Sign in to confirm" in msg or "not a bot" in msg.lower():
+            raise HTTPException(422,"YouTube is refusing requests from this server (bot verification/IP restriction). Deno and yt-dlp EJS support are installed in this backend build, but YouTube may still block datacenter IPs. Try later or use a creator-authorized source file.")
+        raise HTTPException(422,"Could not inspect this video. It may be unavailable, restricted, or unsupported. "+msg[:180])
 
 def run_job(job_id,req,url):
     folder=WORK/job_id
@@ -102,7 +126,6 @@ def run_job(job_id,req,url):
             cmd=["ffmpeg","-y","-ss",str(req.start),"-i",str(source),"-t",str(req.end-req.start),"-c","copy","-movflags","+faststart",str(final)]
             result=subprocess.run(cmd,capture_output=True,text=True,timeout=240)
             if result.returncode!=0:
-                # Accurate re-encode fallback for keyframe-boundary clips.
                 cmd=["ffmpeg","-y","-ss",str(req.start),"-i",str(source),"-t",str(req.end-req.start),"-c:v","libx264","-preset","veryfast","-crf","23","-c:a","aac","-movflags","+faststart",str(final)]
                 result=subprocess.run(cmd,capture_output=True,text=True,timeout=480)
                 if result.returncode!=0: raise RuntimeError("FFmpeg could not create the selected clip.")
@@ -112,7 +135,10 @@ def run_job(job_id,req,url):
         with lock:
             jobs[job_id].update(status="complete",progress=100,message="Ready to download.",file=str(final),filename=final.name)
     except Exception as e:
-        with lock: jobs[job_id].update(status="error",message=("Processing failed: "+str(e))[:500],progress=0)
+        msg=str(e)
+        if "Sign in to confirm" in msg or "not a bot" in msg.lower():
+            msg="YouTube refused this server request (bot verification/IP restriction). This cannot be fixed reliably by retrying. Use a permitted creator download/source file or retry later."
+        with lock: jobs[job_id].update(status="error",message=("Processing failed: "+msg)[:500],progress=0)
         shutil.rmtree(folder,ignore_errors=True)
 
 @app.post("/api/jobs")
